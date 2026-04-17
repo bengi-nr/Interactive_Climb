@@ -3,7 +3,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using UnityEngine;
-using System.Globalization; // KRİTİK: Nokta/Virgül ayrımı için gerekli
+using System.Globalization;
 
 public class UDPReceiver : MonoBehaviour
 {
@@ -11,13 +11,23 @@ public class UDPReceiver : MonoBehaviour
     UdpClient client;
     public int port = 5005;
 
-    // --- VERİ AYRIŞTIRMA İÇİN GEREKLİ DEĞİŞKENLER ---
-    public float handX; // Update içinde kullanacağımız X koordinatı
-    public float handY; // Update içinde kullanacağımız Y koordinatı
-    public string handLabel = ""; // Sağ mı sol mu?
+    [Header("Duvar Boyutları (Metre)")]
+    public float wallWidth = 4.0f;  // Senin 4 metrelik duvarın
+    public float wallHeight = 4.0f; // Senin 4 metrelik duvarın
+
+    [Header("Hareket Ayarları")]
+    [Range(0.01f, 1.0f)]
+    public float smoothSpeed = 0.15f; // Hareketin yumuşaklığı (0: Çok yavaş, 1: Işınlanma)
+    public bool invertX = false;      // Eğer elin sağa gidince kutu sola giderse bunu işaretle
+
+    // Veri değişkenleri
+    private float handX;
+    private float handY;
+    public string handLabel = "";
     
-    private string lastReceivedPacket = "";
-    bool isRunning = false;
+    // Yumuşatma için hedef ve mevcut pozisyon
+    private Vector3 targetPosition;
+    private bool isRunning = false;
 
     void Start()
     {
@@ -36,25 +46,36 @@ public class UDPReceiver : MonoBehaviour
             {
                 IPEndPoint anyIP = new IPEndPoint(IPAddress.Any, 0);
                 byte[] data = client.Receive(ref anyIP); 
-                lastReceivedPacket = Encoding.UTF8.GetString(data);
+                string lastReceivedPacket = Encoding.UTF8.GetString(data);
 
-                // --- 2. ADIM: VERİ AYRIŞTIRMA VE DÖNÜŞTÜRME ---
-                string[] parts = lastReceivedPacket.Split(','); // Virgülle ayır
+                string[] parts = lastReceivedPacket.Split(',');
 
-                if (parts.Length == 3) // Label, X ve Y geldiğinden emin ol
+                if (parts.Length == 3)
                 {
                     try
                     {
-                        handLabel = parts[0]; // "Left" veya "Right"
+                        handLabel = parts[0];
                         
-                        // float.Parse ile metni sayıya çeviriyoruz
-                        // InvariantCulture sayesinde bilgisayarın dil ayarı ne olursa olsun (.) ondalık sayılır.
-                        handX = float.Parse(parts[1], CultureInfo.InvariantCulture);
-                        handY = float.Parse(parts[2], CultureInfo.InvariantCulture);
+                        // Ham veriyi al (0 ile 1 arası)
+                        float rawX = float.Parse(parts[1], CultureInfo.InvariantCulture);
+                        float rawY = float.Parse(parts[2], CultureInfo.InvariantCulture);
+
+                        // --- 3. ADIM: SENKRONİZASYON VE ÖLÇEKLENDİRME (MAPPING) ---
+                        // (rawX - 0.5f) -> Veriyi merkeze çeker (-0.5 ile +0.5 arası yapar)
+                        // wallWidth ile çarpınca -2m ile +2m arasına yayar (Toplam 4m)
+                        float processedX = (rawX - 0.5f) * wallWidth;
+                        
+                        // MediaPipe'da 0 yukarısı olduğu için (0.5 - rawY) yönü yukarı çevirir
+                        float processedY = (0.5f - rawY) * wallHeight;
+
+                        if (invertX) processedX *= -1;
+
+                        // Yeni hedef noktayı belirle
+                        targetPosition = new Vector3(processedX, processedY, 0);
                     }
                     catch (System.Exception e)
                     {
-                        Debug.LogWarning("Sayıya dönüştürme hatası: " + e.Message);
+                        Debug.LogWarning("Dönüştürme hatası: " + e.Message);
                     }
                 }
             }
@@ -65,16 +86,12 @@ public class UDPReceiver : MonoBehaviour
         }
     }
 
-    // --- VERİ GÜVENLİĞİ: Update ana döngüdür ve görsel hareket burada yapılır ---
     void Update()
     {
-        // Python'dan gelen 0-1 arası veriyi sahne boyutuna oranla
-        // MediaPipe'da sol üst (0,0), sağ alt (1,1)'dir. Unity koordinatlarına uyarla:
-        float finalX = (handX - 0.5f) * 10f; 
-        float finalY = (0.5f - handY) * 7f; // Y eksenini ters çeviriyoruz
-
-        // Kutuyu yeni pozisyona ışınla
-        transform.position = new Vector3(finalX, finalY, 0);
+        // --- EKSTRA: HAREKET YUMUŞATMA (LERP) ---
+        // Kutuyu mevcut yerinden hedef yere 'smoothSpeed' hızıyla kaydırarak götürür.
+        // Bu, elindeki küçük titremelerin kutuya yansımasını engeller.
+        transform.position = Vector3.Lerp(transform.position, targetPosition, smoothSpeed);
     }
 
     void OnDisable() { StopUDP(); }
